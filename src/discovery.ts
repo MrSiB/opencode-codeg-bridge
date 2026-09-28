@@ -42,10 +42,7 @@ export async function resolveWorkspaceFolder(
   cwd: string = process.cwd()
 ): Promise<string> {
   if (explicitWorkspace) {
-    const resolved = path.resolve(explicitWorkspace);
-    if (await dirExists(resolved)) {
-      return resolved;
-    }
+    return path.resolve(explicitWorkspace);
   }
 
   if (process.env.CODEG_WORKSPACE && (await dirExists(process.env.CODEG_WORKSPACE))) {
