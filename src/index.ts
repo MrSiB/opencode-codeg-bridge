@@ -7,6 +7,7 @@ export * from "./backup.js";
 export * from "./sync.js";
 export * from "./cli.js";
 export * from "./plugin.js";
+export { opencodeCodegBridgePlugin as default, opencodeCodegBridgePlugin } from "./plugin.js";
 export {
   retryAsync,
   isSqliteBusyError,

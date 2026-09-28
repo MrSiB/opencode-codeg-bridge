@@ -3,7 +3,7 @@ import path from "node:path";
 import os from "node:os";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { PlanNotFoundError, DatabaseNotFoundError } from "./errors.js";
+import { DatabaseNotFoundError, PlanNotFoundError } from "./errors.js";
 
 const execFileAsync = promisify(execFile);
 
