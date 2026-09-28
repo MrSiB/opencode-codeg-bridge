@@ -1,0 +1,45 @@
+{
+  "name": "opencode-codeg-bridge",
+  "version": "0.1.0",
+  "description": "Standalone zero-native-dependency OpenCode plugin and CLI bridging OmO plans to Codeg",
+  "type": "module",
+  "main": "./dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
+  "bin": {
+    "omo-codeg": "./dist/bin/omo-codeg.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "import": "./dist/src/index.js"
+    },
+    "./types": {
+      "types": "./dist/src/types.d.ts",
+      "import": "./dist/src/types.js"
+    }
+  },
+  "files": [
+    "dist",
+    "bin/omo-codeg",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json && chmod +x dist/bin/omo-codeg.js",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "@opencode-ai/plugin": "^1.18.16",
+    "commander": "^13.1.0",
+    "picocolors": "^1.1.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.0",
+    "typescript": "^5.8.2",
+    "vitest": "^3.0.7"
+  }
+}

@@ -1,0 +1,14 @@
+#!/usr/bin/env node
+import { existsSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const distPath = join(__dirname, "..", "dist", "bin", "omo-codeg.js");
+
+if (existsSync(distPath)) {
+  await import(distPath);
+} else {
+  console.error("opencode-codeg-bridge is not built yet. Run 'npm run build' first.");
+  process.exit(1);
+}
