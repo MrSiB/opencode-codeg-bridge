@@ -1,11 +1,19 @@
 import path from "node:path";
-import { SqliteClient } from "./sqlite.js";
+import fs from "node:fs/promises";
+import { SqliteClient, escapeSqlString } from "./sqlite.js";
 import { parseMarkdownPlan, parseSourceKey } from "./parser.js";
+import { createDatabaseBackup } from "./backup.js";
+import {
+  BridgeError,
+  DatabaseNotFoundError,
+  PlanNotFoundError,
+  FolderNotFoundError
+} from "./errors.js";
 import type { ParsedPlan, SyncResult, TaskDiff, PlanSyncOptions, PlanDiffOptions } from "./types.js";
 import { PRESERVED_STATUSES } from "./types.js";
-import fs from "node:fs/promises";
 
 export { PRESERVED_STATUSES, type PlanSyncOptions, type PlanDiffOptions };
+export type ComputePlanDiffOptions = PlanDiffOptions;
 
 interface ExistingTaskRow {
   id: number;
@@ -22,8 +30,11 @@ export interface FolderRow {
   path: string;
 }
 
-function escapeSqlString(val: string): string {
-  return val.replace(/'/g, "''");
+export function escapeSql(val: unknown): string {
+  if (val === null || val === undefined) {
+    return "";
+  }
+  return escapeSqlString(String(val));
 }
 
 function isEligibleForTitleFallback(row: ExistingTaskRow, currentPlanSlug: string): boolean {
@@ -61,7 +72,7 @@ export async function findFolder(
 ): Promise<FolderRow | null> {
   const normPath = path.resolve(workspacePath);
   const rows = await client.query<FolderRow>(
-    `SELECT id, name, path FROM folder WHERE path = '${escapeSqlString(normPath)}';`
+    `SELECT id, name, path FROM folder WHERE path = '${escapeSql(normPath)}';`
   );
 
   if (rows.length > 0) {
@@ -80,13 +91,15 @@ export async function findOrCreateFolder(
 
   await client.exec(`
     INSERT INTO folder (name, path, git_branch, last_opened_at, created_at, updated_at, is_open)
-    VALUES ('${escapeSqlString(folderName)}', '${escapeSqlString(normPath)}', 'main', datetime('now'), datetime('now'), datetime('now'), 1)
+    VALUES ('${escapeSql(folderName)}', '${escapeSql(normPath)}', 'main', datetime('now'), datetime('now'), datetime('now'), 1)
     ON CONFLICT(path) DO UPDATE SET updated_at = datetime('now');
   `);
 
   const folder = await findFolder(client, normPath);
   if (!folder) {
-    throw new Error(`Failed to find or create folder for path: ${normPath}`);
+    throw new FolderNotFoundError(`Failed to find or create folder for path: ${normPath}`, {
+      details: { workspacePath: normPath }
+    });
   }
 
   return folder;
@@ -200,9 +213,56 @@ export async function computePlanDiff(
 }
 
 export async function syncPlanToCodeg(options: PlanSyncOptions): Promise<SyncResult> {
-  const client = new SqliteClient(options.dbPath);
-  const planContent = await fs.readFile(options.planPath, "utf-8");
+  if (!options || typeof options !== "object") {
+    throw new BridgeError("Sync options must be a valid object");
+  }
+  if (!options.dbPath || typeof options.dbPath !== "string" || !options.dbPath.trim()) {
+    throw new DatabaseNotFoundError("Database path is required and must be a non-empty string", {
+      details: { dbPath: options?.dbPath }
+    });
+  }
+  if (!options.planPath || typeof options.planPath !== "string" || !options.planPath.trim()) {
+    throw new PlanNotFoundError("Plan path is required and must be a non-empty string", {
+      details: { planPath: options?.planPath }
+    });
+  }
+  if (!options.workspacePath || typeof options.workspacePath !== "string" || !options.workspacePath.trim()) {
+    throw new FolderNotFoundError("Workspace path is required and must be a non-empty string", {
+      details: { workspacePath: options?.workspacePath }
+    });
+  }
+  if (options.dryRun !== undefined && typeof options.dryRun !== "boolean") {
+    throw new BridgeError("dryRun option must be a boolean", {
+      details: { dryRun: options.dryRun }
+    });
+  }
+  if (options.force !== undefined && typeof options.force !== "boolean") {
+    throw new BridgeError("force option must be a boolean", {
+      details: { force: options.force }
+    });
+  }
+
+  let planContent: string;
+  try {
+    planContent = await fs.readFile(options.planPath, "utf-8");
+  } catch (err: unknown) {
+    const errorObj = err as { code?: string };
+    if (errorObj?.code === "ENOENT") {
+      throw new PlanNotFoundError(`Plan file not found at '${options.planPath}'`, {
+        details: { planPath: options.planPath },
+        cause: err
+      });
+    }
+    throw err;
+  }
+
   const plan = parseMarkdownPlan(planContent, options.planPath);
+
+  if (!options.dryRun) {
+    await createDatabaseBackup(options.dbPath);
+  }
+
+  const client = new SqliteClient(options.dbPath);
 
   if (options.dryRun) {
     const existingFolder = await findFolder(client, options.workspacePath);
@@ -257,38 +317,31 @@ export async function syncPlanToCodeg(options: PlanSyncOptions): Promise<SyncRes
     }
   }
 
-  await client.createBackup();
-
   const sqlCommands: string[] = [];
 
   for (const diff of diffs) {
     if (diff.action === "create") {
-      const taskConfig = JSON.stringify({
-        prompt: diff.task.description || diff.task.title,
-        wave: diff.task.wave
+      const task = diff.task;
+      const config = JSON.stringify({
+        prompt: task.description || task.title,
+        wave: task.wave
+      });
+      const meta = JSON.stringify({
+        plan: plan.planSlug,
+        wave: task.wave
       });
 
       sqlCommands.push(`
-        INSERT INTO work_task (
-          folder_id, title, config, status, source_kind, source_key, source_meta, created_at, updated_at
-        ) VALUES (
-          ${folderId},
-          '${escapeSqlString(diff.task.title)}',
-          '${escapeSqlString(taskConfig)}',
-          '${diff.targetStatus}',
-          'omo_plan',
-          '${escapeSqlString(diff.task.sourceKey)}',
-          '${escapeSqlString(JSON.stringify({ plan: plan.planSlug, wave: diff.task.wave }))}',
-          datetime('now'),
-          datetime('now')
-        );
-      `);
+INSERT INTO work_task (folder_id, title, config, status, source_kind, source_key, source_meta, created_at, updated_at)
+SELECT ${folderId}, '${escapeSql(task.title)}', '${escapeSql(config)}', '${diff.targetStatus}', 'omo_plan', '${escapeSql(task.sourceKey)}', '${escapeSql(meta)}', datetime('now'), datetime('now')
+WHERE NOT EXISTS (
+SELECT 1 FROM work_task WHERE folder_id = ${folderId} AND source_key = '${escapeSql(task.sourceKey)}'
+);
+      `.trim());
     } else if (diff.action === "update" && diff.existingId) {
-      sqlCommands.push(`
-        UPDATE work_task
-        SET status = '${diff.targetStatus}', updated_at = datetime('now')
-        WHERE id = ${diff.existingId};
-      `);
+      sqlCommands.push(
+        `UPDATE work_task SET status = '${diff.targetStatus}', updated_at = datetime('now') WHERE id = ${diff.existingId};`
+      );
     }
   }
 

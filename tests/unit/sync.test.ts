@@ -11,6 +11,12 @@ import {
 } from "../../src/sync.js";
 import { parseMarkdownPlan } from "../../src/parser.js";
 import { SqliteClient } from "../../src/sqlite.js";
+import {
+  BridgeError,
+  DatabaseNotFoundError,
+  PlanNotFoundError,
+  FolderNotFoundError
+} from "../../src/errors.js";
 
 describe("Idempotent Plan-to-Task Synchronizer", () => {
   let dbInstance: TestDbInstance;
@@ -23,6 +29,166 @@ describe("Idempotent Plan-to-Task Synchronizer", () => {
 
   afterEach(async () => {
     await dbInstance.cleanup();
+  });
+
+  it("полный цикл синхронизации в пустую БД (full synchronization cycle into empty DB)", async () => {
+    const workspacePath = "/workspace/full-cycle-sample";
+    const result = await syncPlanToCodeg({
+      dbPath: dbInstance.dbPath,
+      planPath: samplePlanPath,
+      workspacePath,
+      dryRun: false
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.planSlug).toBe("sample-plan");
+    expect(result.total).toBe(4);
+    expect(result.created).toBe(4);
+    expect(result.updated).toBe(0);
+    expect(result.preserved).toBe(0);
+    expect(result.dryRun).toBe(false);
+
+    const parentDir = dbInstance.tempDir;
+    const files = await fs.readdir(parentDir);
+    const backups = files.filter((f) =>
+      f.startsWith(`${path.basename(dbInstance.dbPath)}.bak.`)
+    );
+    expect(backups.length).toBeGreaterThanOrEqual(1);
+
+    const folders = await dbInstance.query<{ id: number; name: string; path: string }>(
+      `SELECT id, name, path FROM folder WHERE path = '${workspacePath}';`
+    );
+    expect(folders).toHaveLength(1);
+    expect(folders[0].name).toBe("full-cycle-sample");
+    const folderId = folders[0].id;
+
+    const tasks = await dbInstance.query<{
+      id: number;
+      folder_id: number;
+      title: string;
+      config: string;
+      status: string;
+      source_kind: string;
+      source_key: string;
+      source_meta: string;
+    }>("SELECT id, folder_id, title, config, status, source_kind, source_key, source_meta FROM work_task ORDER BY id ASC;");
+
+    expect(tasks).toHaveLength(4);
+    for (const task of tasks) {
+      expect(task.folder_id).toBe(folderId);
+      expect(task.source_kind).toBe("omo_plan");
+      expect(task.source_key).toBeTruthy();
+      expect(task.source_key.startsWith("sample-plan:")).toBe(true);
+
+      const parsedConfig = JSON.parse(task.config);
+      expect(parsedConfig).toHaveProperty("prompt");
+      expect(parsedConfig).toHaveProperty("wave");
+
+      const parsedMeta = JSON.parse(task.source_meta);
+      expect(parsedMeta.plan).toBe("sample-plan");
+      expect(parsedMeta).toHaveProperty("wave");
+    }
+
+    expect(tasks.find((t) => t.title.includes("Initialize git"))?.status).toBe("done");
+    expect(tasks.find((t) => t.title.includes("Setup core types"))?.status).toBe("todo");
+  });
+
+  it("конкурентная синхронизация одного и того же плана не создает дубликатов задач (concurrent synchronization does not create duplicate tasks)", async () => {
+    const workspacePath = "/workspace/concurrent-sample";
+
+    const concurrencyCount = 5;
+    const syncPromises = Array.from({ length: concurrencyCount }, () =>
+      syncPlanToCodeg({
+        dbPath: dbInstance.dbPath,
+        planPath: samplePlanPath,
+        workspacePath,
+        dryRun: false
+      })
+    );
+
+    const results = await Promise.all(syncPromises);
+
+    expect(results).toHaveLength(concurrencyCount);
+    for (const res of results) {
+      expect(res.success).toBe(true);
+      expect(res.total).toBe(4);
+    }
+
+    const folders = await dbInstance.query<{ id: number; path: string }>(
+      `SELECT id, path FROM folder WHERE path = '${workspacePath}';`
+    );
+    expect(folders).toHaveLength(1);
+    const folderId = folders[0].id;
+
+    const tasks = await dbInstance.query<{ id: number; title: string; source_key: string }>(
+      `SELECT id, title, source_key FROM work_task WHERE folder_id = ${folderId};`
+    );
+    expect(tasks).toHaveLength(4);
+
+    const sourceKeys = tasks.map((t) => t.source_key);
+    const uniqueKeys = new Set(sourceKeys);
+    expect(uniqueKeys.size).toBe(4);
+
+    const countRow = await dbInstance.query<{ count: number }>(
+      "SELECT count(*) as count FROM work_task;"
+    );
+    expect(countRow[0].count).toBe(4);
+  });
+
+  it("роллбэк транзакции при симуляции синтаксической ошибки в середине пакета (transaction rollback on simulated syntax error mid-batch)", async () => {
+    const workspacePath = "/workspace/rollback-sample";
+    const client = new SqliteClient(dbInstance.dbPath);
+    const folder = await findOrCreateFolder(client, workspacePath);
+
+    const commandsWithMidBatchSyntaxError = [
+      `INSERT INTO work_task (folder_id, title, config, status, source_kind, source_key, source_meta, created_at, updated_at)
+       SELECT ${folder.id}, 'Task 1 Before Error', '{}', 'todo', 'omo_plan', 'key:before', '{}', datetime('now'), datetime('now')
+       WHERE NOT EXISTS (SELECT 1 FROM work_task WHERE folder_id = ${folder.id} AND source_key = 'key:before');`,
+      `THIS IS AN INVALID SYNTAX ERROR STATEMENT IN THE MIDDLE OF BATCH;`,
+      `INSERT INTO work_task (folder_id, title, config, status, source_kind, source_key, source_meta, created_at, updated_at)
+       SELECT ${folder.id}, 'Task 2 After Error', '{}', 'todo', 'omo_plan', 'key:after', '{}', datetime('now'), datetime('now')
+       WHERE NOT EXISTS (SELECT 1 FROM work_task WHERE folder_id = ${folder.id} AND source_key = 'key:after');`
+    ];
+
+    await expect(
+      client.executeInTransaction(commandsWithMidBatchSyntaxError)
+    ).rejects.toThrow();
+
+    const taskCountAfterFailedBatch = await dbInstance.query<{ count: number }>(
+      `SELECT count(*) as count FROM work_task WHERE folder_id = ${folder.id};`
+    );
+    expect(taskCountAfterFailedBatch[0].count).toBe(0);
+
+    const clientPrototype = SqliteClient.prototype;
+    const originalExecuteInTransaction = clientPrototype.executeInTransaction;
+
+    try {
+      clientPrototype.executeInTransaction = async function (commands, retryOpts) {
+        const midIndex = Math.floor(commands.length / 2);
+        const corruptedCommands = [
+          ...commands.slice(0, midIndex),
+          "MALFORMED SQL SYNTAX ERROR INSERT INTO NO_WHERE;",
+          ...commands.slice(midIndex)
+        ];
+        return originalExecuteInTransaction.call(this, corruptedCommands, retryOpts);
+      };
+
+      await expect(
+        syncPlanToCodeg({
+          dbPath: dbInstance.dbPath,
+          planPath: samplePlanPath,
+          workspacePath,
+          dryRun: false
+        })
+      ).rejects.toThrow();
+
+      const taskCountAfterFailedSync = await dbInstance.query<{ count: number }>(
+        `SELECT count(*) as count FROM work_task WHERE folder_id = ${folder.id};`
+      );
+      expect(taskCountAfterFailedSync[0].count).toBe(0);
+    } finally {
+      clientPrototype.executeInTransaction = originalExecuteInTransaction;
+    }
   });
 
   it("syncs plan into empty database and creates tasks with correct statuses", async () => {
@@ -402,6 +568,78 @@ describe("Idempotent Plan-to-Task Synchronizer", () => {
       "SELECT count(*) as count FROM folder;"
     );
     expect(folderCount[0].count).toBe(0);
+  });
+});
+
+describe("syncPlanToCodeg Input Validation", () => {
+  let dbInstance: TestDbInstance;
+  let samplePlanPath: string;
+
+  beforeEach(async () => {
+    dbInstance = await createTestDatabase();
+    samplePlanPath = path.resolve(__dirname, "../fixtures/sample-plan.md");
+  });
+
+  afterEach(async () => {
+    await dbInstance.cleanup();
+  });
+
+  it("throws DatabaseNotFoundError when dbPath is missing or invalid", async () => {
+    await expect(
+      syncPlanToCodeg({
+        dbPath: "",
+        planPath: samplePlanPath,
+        workspacePath: "/workspace/sample"
+      })
+    ).rejects.toThrowError(DatabaseNotFoundError);
+  });
+
+  it("throws PlanNotFoundError when planPath is missing or file does not exist", async () => {
+    await expect(
+      syncPlanToCodeg({
+        dbPath: dbInstance.dbPath,
+        planPath: "",
+        workspacePath: "/workspace/sample"
+      })
+    ).rejects.toThrowError(PlanNotFoundError);
+
+    await expect(
+      syncPlanToCodeg({
+        dbPath: dbInstance.dbPath,
+        planPath: "/non/existent/path/plan.md",
+        workspacePath: "/workspace/sample"
+      })
+    ).rejects.toThrowError(PlanNotFoundError);
+  });
+
+  it("throws FolderNotFoundError when workspacePath is missing or invalid", async () => {
+    await expect(
+      syncPlanToCodeg({
+        dbPath: dbInstance.dbPath,
+        planPath: samplePlanPath,
+        workspacePath: ""
+      })
+    ).rejects.toThrowError(FolderNotFoundError);
+  });
+
+  it("throws BridgeError when dryRun or force is not a boolean", async () => {
+    await expect(
+      syncPlanToCodeg({
+        dbPath: dbInstance.dbPath,
+        planPath: samplePlanPath,
+        workspacePath: "/workspace/sample",
+        dryRun: "true" as any
+      })
+    ).rejects.toThrowError(BridgeError);
+
+    await expect(
+      syncPlanToCodeg({
+        dbPath: dbInstance.dbPath,
+        planPath: samplePlanPath,
+        workspacePath: "/workspace/sample",
+        force: 123 as any
+      })
+    ).rejects.toThrowError(BridgeError);
   });
 });
 
