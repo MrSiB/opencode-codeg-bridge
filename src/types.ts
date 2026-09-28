@@ -36,6 +36,7 @@ export interface PlanTask {
   status: TaskStatus;
   sourceKey: string;
   where?: string;
+  what?: string;
   how?: string;
   why?: string;
   expectedResult?: string;
