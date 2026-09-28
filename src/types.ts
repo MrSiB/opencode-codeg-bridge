@@ -9,12 +9,40 @@ export type TaskStatus =
   | "queued"
   | "preparing"
   | "running"
+  | "in_progress"
+  | "claimed"
   | "awaiting_input"
   | "review"
   | "merging"
   | "done"
   | "failed"
-  | "canceled";
+  | "canceled"
+  | "cancelled";
+
+export const PRESERVED_STATUSES = new Set([
+  "running",
+  "in_progress",
+  "claimed",
+  "review",
+  "merging",
+  "done",
+  "cancelled",
+  "canceled",
+  "failed",
+  "awaiting_input"
+]);
+
+export interface PlanDiffOptions {
+  force?: boolean;
+}
+
+export interface PlanSyncOptions {
+  dbPath: string;
+  planPath: string;
+  workspacePath: string;
+  dryRun?: boolean;
+  force?: boolean;
+}
 
 /**
  * Parsed components of a task source_key.

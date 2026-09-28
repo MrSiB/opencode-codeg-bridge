@@ -1,15 +1,11 @@
 import path from "node:path";
 import { SqliteClient } from "./sqlite.js";
-import { parseMarkdownPlan } from "./parser.js";
-import type { ParsedPlan, SyncResult, TaskDiff } from "./types.js";
+import { parseMarkdownPlan, parseSourceKey } from "./parser.js";
+import type { ParsedPlan, SyncResult, TaskDiff, PlanSyncOptions, PlanDiffOptions } from "./types.js";
+import { PRESERVED_STATUSES } from "./types.js";
 import fs from "node:fs/promises";
 
-export interface PlanSyncOptions {
-  dbPath: string;
-  planPath: string;
-  workspacePath: string;
-  dryRun?: boolean;
-}
+export { PRESERVED_STATUSES, type PlanSyncOptions, type PlanDiffOptions };
 
 interface ExistingTaskRow {
   id: number;
@@ -17,6 +13,7 @@ interface ExistingTaskRow {
   title: string;
   status: string;
   source_key: string | null;
+  source_meta: string | null;
 }
 
 export interface FolderRow {
@@ -25,16 +22,37 @@ export interface FolderRow {
   path: string;
 }
 
-const PRESERVED_STATUSES = new Set([
-  "running",
-  "in_progress",
-  "review",
-  "merging",
-  "done"
-]);
-
 function escapeSqlString(val: string): string {
   return val.replace(/'/g, "''");
+}
+
+function isEligibleForTitleFallback(row: ExistingTaskRow, currentPlanSlug: string): boolean {
+  if (!row.source_key || row.source_key.trim() === "") {
+    return true;
+  }
+
+  if (row.source_meta && row.source_meta.trim() !== "") {
+    try {
+      const meta = JSON.parse(row.source_meta);
+      if (meta && typeof meta === "object") {
+        const metaPlan = meta.plan || meta.planSlug || meta.slug;
+        if (typeof metaPlan === "string" && metaPlan === currentPlanSlug) {
+          return true;
+        }
+      }
+    } catch {
+      if (row.source_meta.trim() === currentPlanSlug) {
+        return true;
+      }
+    }
+  }
+
+  const parsedKey = parseSourceKey(row.source_key);
+  if (parsedKey && parsedKey.planSlug === currentPlanSlug) {
+    return true;
+  }
+
+  return false;
 }
 
 export async function findFolder(
@@ -77,8 +95,11 @@ export async function findOrCreateFolder(
 export async function computePlanDiff(
   client: SqliteClient,
   plan: ParsedPlan,
-  folderId: number | null
+  folderId: number | null,
+  options?: PlanDiffOptions | boolean
 ): Promise<TaskDiff[]> {
+  const force = typeof options === "boolean" ? options : Boolean(options?.force);
+
   if (folderId === null || folderId === undefined) {
     return plan.tasks.map((task) => ({
       action: "create" as const,
@@ -88,23 +109,47 @@ export async function computePlanDiff(
   }
 
   const existingRows = await client.query<ExistingTaskRow>(
-    `SELECT id, folder_id, title, status, source_key FROM work_task WHERE folder_id = ${folderId};`
+    `SELECT id, folder_id, title, status, source_key, source_meta FROM work_task WHERE folder_id = ${folderId};`
   );
 
   const existingByKey = new Map<string, ExistingTaskRow>();
-  const existingByTitle = new Map<string, ExistingTaskRow>();
+  const existingByTitle = new Map<string, ExistingTaskRow[]>();
 
   for (const row of existingRows) {
-    if (row.source_key) {
+    if (row.source_key && row.source_key.trim() !== "") {
       existingByKey.set(row.source_key, row);
     }
-    existingByTitle.set(row.title.trim().toLowerCase(), row);
+    if (isEligibleForTitleFallback(row, plan.planSlug)) {
+      const normTitle = row.title.trim().toLowerCase();
+      const list = existingByTitle.get(normTitle) || [];
+      list.push(row);
+      existingByTitle.set(normTitle, list);
+    }
   }
 
   const diffs: TaskDiff[] = [];
+  const matchedRowIds = new Set<number>();
 
   for (const task of plan.tasks) {
-    const existing = existingByKey.get(task.sourceKey) || existingByTitle.get(task.title.trim().toLowerCase());
+    let existing: ExistingTaskRow | undefined;
+
+    if (task.sourceKey && existingByKey.has(task.sourceKey)) {
+      const candidate = existingByKey.get(task.sourceKey)!;
+      if (!matchedRowIds.has(candidate.id)) {
+        existing = candidate;
+        matchedRowIds.add(existing.id);
+      }
+    }
+
+    if (!existing) {
+      const normTitle = task.title.trim().toLowerCase();
+      const candidates = existingByTitle.get(normTitle) || [];
+      const fallback = candidates.find((r) => !matchedRowIds.has(r.id));
+      if (fallback) {
+        existing = fallback;
+        matchedRowIds.add(existing.id);
+      }
+    }
 
     if (!existing) {
       diffs.push({
@@ -116,13 +161,30 @@ export async function computePlanDiff(
     }
 
     let targetStatus = existing.status;
-    let action: "preserve" | "update" = "preserve";
+    let action: "create" | "update" | "preserve" = "preserve";
 
-    if (task.status === "done" && existing.status !== "done") {
-      targetStatus = "done";
-      action = "update";
-    } else if (task.status === "todo" && !PRESERVED_STATUSES.has(existing.status)) {
-      targetStatus = "todo";
+    if (force) {
+      if (existing.status !== task.status) {
+        targetStatus = task.status;
+        action = "update";
+      } else {
+        targetStatus = existing.status;
+        action = "preserve";
+      }
+    } else {
+      if (task.status === "done" && existing.status !== "done") {
+        targetStatus = "done";
+        action = "update";
+      } else if (PRESERVED_STATUSES.has(existing.status)) {
+        targetStatus = existing.status;
+        action = "preserve";
+      } else if (existing.status !== task.status) {
+        targetStatus = task.status;
+        action = "update";
+      } else {
+        targetStatus = existing.status;
+        action = "preserve";
+      }
     }
 
     diffs.push({
@@ -147,7 +209,8 @@ export async function syncPlanToCodeg(options: PlanSyncOptions): Promise<SyncRes
     const diffs = await computePlanDiff(
       client,
       plan,
-      existingFolder ? existingFolder.id : null
+      existingFolder ? existingFolder.id : null,
+      { force: options.force }
     );
 
     let created = 0;
@@ -178,7 +241,7 @@ export async function syncPlanToCodeg(options: PlanSyncOptions): Promise<SyncRes
 
   const folder = await findOrCreateFolder(client, options.workspacePath);
   const folderId = folder.id;
-  const diffs = await computePlanDiff(client, plan, folderId);
+  const diffs = await computePlanDiff(client, plan, folderId, { force: options.force });
 
   let created = 0;
   let updated = 0;

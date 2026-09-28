@@ -25,6 +25,7 @@ export async function runCli(argv: string[] = process.argv): Promise<void> {
     .option("-d, --db <path>", "Path to codeg.db SQLite database")
     .option("-w, --workspace <path>", "Path to target workspace")
     .option("--dry-run", "Preview changes without modifying the database", false)
+    .option("-f, --force", "Force reset task statuses from plan", false)
     .action(async (options) => {
       try {
         const env = await discoverEnvironment({
@@ -43,12 +44,14 @@ export async function runCli(argv: string[] = process.argv): Promise<void> {
         console.log(pc.gray(`Database: ${env.dbPath}`));
         console.log(pc.gray(`Workspace: ${env.workspacePath}`));
         console.log(pc.gray(`Dry run: ${Boolean(options.dryRun)}`));
+        console.log(pc.gray(`Force: ${Boolean(options.force)}`));
 
         const result = await syncPlanToCodeg({
           dbPath: env.dbPath,
           planPath: env.planPath,
           workspacePath: env.workspacePath,
-          dryRun: options.dryRun
+          dryRun: options.dryRun,
+          force: Boolean(options.force)
         });
 
         console.log(
@@ -68,6 +71,7 @@ export async function runCli(argv: string[] = process.argv): Promise<void> {
     .option("-p, --plan <path>", "Path to .omo/plans/*.md file")
     .option("-d, --db <path>", "Path to codeg.db SQLite database")
     .option("-w, --workspace <path>", "Path to target workspace")
+    .option("-f, --force", "Force diff preview considering plan task statuses", false)
     .action(async (options) => {
       try {
         const env = await discoverEnvironment({
@@ -85,7 +89,9 @@ export async function runCli(argv: string[] = process.argv): Promise<void> {
         const planContent = await fs.readFile(env.planPath, "utf-8");
         const plan = parseMarkdownPlan(planContent, env.planPath);
         const folder = await findFolder(client, env.workspacePath);
-        const diffs = await computePlanDiff(client, plan, folder ? folder.id : null);
+        const diffs = await computePlanDiff(client, plan, folder ? folder.id : null, {
+          force: Boolean(options.force)
+        });
 
         console.log(pc.cyan(`=== Diff: ${plan.planTitle} ===`));
         for (const diff of diffs) {

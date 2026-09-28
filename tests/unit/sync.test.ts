@@ -4,12 +4,13 @@ import fs from "node:fs/promises";
 import { createTestDatabase, type TestDbInstance } from "../helpers/test-db.js";
 import {
   syncPlanToCodeg,
+  computePlanDiff,
   findFolder,
   findOrCreateFolder,
-  computePlanDiff
+  PRESERVED_STATUSES
 } from "../../src/sync.js";
-import { SqliteClient } from "../../src/sqlite.js";
 import { parseMarkdownPlan } from "../../src/parser.js";
+import { SqliteClient } from "../../src/sqlite.js";
 
 describe("Idempotent Plan-to-Task Synchronizer", () => {
   let dbInstance: TestDbInstance;
@@ -46,7 +47,6 @@ describe("Idempotent Plan-to-Task Synchronizer", () => {
   });
 
   it("preserves running, in_progress, and review statuses during re-sync", async () => {
-    // Initial sync
     await syncPlanToCodeg({
       dbPath: dbInstance.dbPath,
       planPath: samplePlanPath,
@@ -54,14 +54,12 @@ describe("Idempotent Plan-to-Task Synchronizer", () => {
       dryRun: false
     });
 
-    // Simulate an agent picking up task 1 and moving it to running
     await dbInstance.exec(`
       UPDATE work_task
       SET status = 'running'
       WHERE title LIKE '%Setup core types%';
     `);
 
-    // Re-sync
     const reSyncResult = await syncPlanToCodeg({
       dbPath: dbInstance.dbPath,
       planPath: samplePlanPath,
@@ -76,6 +74,312 @@ describe("Idempotent Plan-to-Task Synchronizer", () => {
       "SELECT status FROM work_task WHERE title LIKE '%Setup core types%';"
     );
     expect(runningTask[0].status).toBe("running");
+  });
+
+  it("preserves running, claimed, review, and done statuses during re-sync", async () => {
+    await syncPlanToCodeg({
+      dbPath: dbInstance.dbPath,
+      planPath: samplePlanPath,
+      workspacePath: "/workspace/sample",
+      dryRun: false
+    });
+
+    await dbInstance.exec(`
+      UPDATE work_task SET status = 'running' WHERE title LIKE '%Setup core types%';
+      UPDATE work_task SET status = 'claimed' WHERE title LIKE '%Implement zero-native%';
+      UPDATE work_task SET status = 'review' WHERE title LIKE '%Add bidirectional%';
+      UPDATE work_task SET status = 'done' WHERE title LIKE '%Initialize git%';
+    `);
+
+    const reSyncResult = await syncPlanToCodeg({
+      dbPath: dbInstance.dbPath,
+      planPath: samplePlanPath,
+      workspacePath: "/workspace/sample",
+      dryRun: false
+    });
+
+    expect(reSyncResult.created).toBe(0);
+    expect(reSyncResult.updated).toBe(0);
+    expect(reSyncResult.preserved).toBe(4);
+
+    const tasks = await dbInstance.query<{ title: string; status: string }>(
+      "SELECT title, status FROM work_task;"
+    );
+
+    const running = tasks.find((t) => t.title.includes("Setup core types"));
+    const claimed = tasks.find((t) => t.title.includes("Implement zero-native"));
+    const review = tasks.find((t) => t.title.includes("Add bidirectional"));
+    const done = tasks.find((t) => t.title.includes("Initialize git"));
+
+    expect(running?.status).toBe("running");
+    expect(claimed?.status).toBe("claimed");
+    expect(review?.status).toBe("review");
+    expect(done?.status).toBe("done");
+  });
+
+  it("preserves all extended statuses in PRESERVED_STATUSES set when plan has todo", async () => {
+    const statusesToTest = Array.from(PRESERVED_STATUSES);
+
+    const planPath = path.join(dbInstance.tempDir, "all-statuses-plan.md");
+    const planLines = ["# Status Test Plan", "", "## Wave 1"];
+    for (let i = 0; i < statusesToTest.length; i++) {
+      planLines.push(`- [ ] **Task ${i} Status Check**`);
+    }
+    await fs.writeFile(planPath, planLines.join("\n"), "utf-8");
+
+    await syncPlanToCodeg({
+      dbPath: dbInstance.dbPath,
+      planPath,
+      workspacePath: "/workspace/sample",
+      dryRun: false
+    });
+
+    for (let i = 0; i < statusesToTest.length; i++) {
+      await dbInstance.exec(`
+        UPDATE work_task
+        SET status = '${statusesToTest[i]}'
+        WHERE title = 'Task ${i} Status Check';
+      `);
+    }
+
+    const reSync = await syncPlanToCodeg({
+      dbPath: dbInstance.dbPath,
+      planPath,
+      workspacePath: "/workspace/sample",
+      dryRun: false
+    });
+
+    expect(reSync.created).toBe(0);
+    expect(reSync.updated).toBe(0);
+    expect(reSync.preserved).toBe(statusesToTest.length);
+
+    const rows = await dbInstance.query<{ title: string; status: string }>(
+      "SELECT title, status FROM work_task;"
+    );
+
+    for (let i = 0; i < statusesToTest.length; i++) {
+      const match = rows.find((r) => r.title === `Task ${i} Status Check`);
+      expect(match?.status).toBe(statusesToTest[i]);
+    }
+  });
+
+  it("isolates tasks between Plan A and Plan B with identical names preventing hijacking", async () => {
+    const planAPath = path.join(dbInstance.tempDir, "plan-a.md");
+    const planBPath = path.join(dbInstance.tempDir, "plan-b.md");
+
+    const planAContent = [
+      "# Plan A",
+      "",
+      "## Wave 1",
+      "- [ ] **Setup Shared Component**",
+      "- [ ] **Unique Plan A Task**"
+    ].join("\n");
+
+    const planBContent = [
+      "# Plan B",
+      "",
+      "## Wave 1",
+      "- [ ] **Setup Shared Component**",
+      "- [ ] **Unique Plan B Task**"
+    ].join("\n");
+
+    await fs.writeFile(planAPath, planAContent, "utf-8");
+    await fs.writeFile(planBPath, planBContent, "utf-8");
+
+    const syncAResult = await syncPlanToCodeg({
+      dbPath: dbInstance.dbPath,
+      planPath: planAPath,
+      workspacePath: "/workspace/sample",
+      dryRun: false
+    });
+
+    expect(syncAResult.created).toBe(2);
+    expect(syncAResult.updated).toBe(0);
+
+    await dbInstance.exec(`
+      UPDATE work_task
+      SET status = 'running'
+      WHERE title = 'Setup Shared Component';
+    `);
+
+    const syncBResult = await syncPlanToCodeg({
+      dbPath: dbInstance.dbPath,
+      planPath: planBPath,
+      workspacePath: "/workspace/sample",
+      dryRun: false
+    });
+
+    expect(syncBResult.created).toBe(2);
+    expect(syncBResult.updated).toBe(0);
+    expect(syncBResult.preserved).toBe(0);
+
+    const allTasks = await dbInstance.query<{
+      id: number;
+      title: string;
+      status: string;
+      source_key: string;
+      source_meta: string;
+    }>("SELECT id, title, status, source_key, source_meta FROM work_task ORDER BY id ASC;");
+
+    expect(allTasks).toHaveLength(4);
+
+    const sharedTasks = allTasks.filter((t) => t.title === "Setup Shared Component");
+    expect(sharedTasks).toHaveLength(2);
+
+    const planATask = sharedTasks.find((t) => t.source_key.startsWith("plan-a:"));
+    const planBTask = sharedTasks.find((t) => t.source_key.startsWith("plan-b:"));
+
+    expect(planATask).toBeDefined();
+    expect(planATask?.status).toBe("running");
+
+    expect(planBTask).toBeDefined();
+    expect(planBTask?.status).toBe("todo");
+
+    const reSyncA = await syncPlanToCodeg({
+      dbPath: dbInstance.dbPath,
+      planPath: planAPath,
+      workspacePath: "/workspace/sample",
+      dryRun: false
+    });
+
+    expect(reSyncA.created).toBe(0);
+    expect(reSyncA.updated).toBe(0);
+    expect(reSyncA.preserved).toBe(2);
+
+    const reSyncB = await syncPlanToCodeg({
+      dbPath: dbInstance.dbPath,
+      planPath: planBPath,
+      workspacePath: "/workspace/sample",
+      dryRun: false
+    });
+
+    expect(reSyncB.created).toBe(0);
+    expect(reSyncB.updated).toBe(0);
+    expect(reSyncB.preserved).toBe(2);
+
+    const afterReSyncTasks = await dbInstance.query<{
+      title: string;
+      status: string;
+      source_key: string;
+    }>("SELECT title, status, source_key FROM work_task;");
+
+    const reCheckedATask = afterReSyncTasks.find((t) => t.source_key.startsWith("plan-a:") && t.title === "Setup Shared Component");
+    const reCheckedBTask = afterReSyncTasks.find((t) => t.source_key.startsWith("plan-b:") && t.title === "Setup Shared Component");
+
+    expect(reCheckedATask?.status).toBe("running");
+    expect(reCheckedBTask?.status).toBe("todo");
+  });
+
+  it("supports force flag to reset preserved statuses back to plan task status", async () => {
+    await syncPlanToCodeg({
+      dbPath: dbInstance.dbPath,
+      planPath: samplePlanPath,
+      workspacePath: "/workspace/sample",
+      dryRun: false
+    });
+
+    await dbInstance.exec(`
+      UPDATE work_task SET status = 'running' WHERE title LIKE '%Setup core types%';
+      UPDATE work_task SET status = 'claimed' WHERE title LIKE '%Implement zero-native%';
+      UPDATE work_task SET status = 'review' WHERE title LIKE '%Add bidirectional%';
+      UPDATE work_task SET status = 'done' WHERE title LIKE '%Initialize git%';
+    `);
+
+    const standardSync = await syncPlanToCodeg({
+      dbPath: dbInstance.dbPath,
+      planPath: samplePlanPath,
+      workspacePath: "/workspace/sample",
+      dryRun: false,
+      force: false
+    });
+
+    expect(standardSync.preserved).toBe(4);
+    expect(standardSync.updated).toBe(0);
+
+    const forcedSync = await syncPlanToCodeg({
+      dbPath: dbInstance.dbPath,
+      planPath: samplePlanPath,
+      workspacePath: "/workspace/sample",
+      dryRun: false,
+      force: true
+    });
+
+    expect(forcedSync.updated).toBe(3);
+    expect(forcedSync.preserved).toBe(1);
+    expect(forcedSync.created).toBe(0);
+
+    const tasks = await dbInstance.query<{ title: string; status: string }>(
+      "SELECT title, status FROM work_task;"
+    );
+
+    const task1 = tasks.find((t) => t.title.includes("Setup core types"));
+    const task2 = tasks.find((t) => t.title.includes("Implement zero-native"));
+    const task3 = tasks.find((t) => t.title.includes("Add bidirectional"));
+    const task4 = tasks.find((t) => t.title.includes("Initialize git"));
+
+    expect(task1?.status).toBe("todo");
+    expect(task2?.status).toBe("todo");
+    expect(task3?.status).toBe("todo");
+    expect(task4?.status).toBe("done");
+  });
+
+  it("updates task to done when marked done in plan even if status in db was running", async () => {
+    const testPlanPath = path.join(dbInstance.tempDir, "sample-plan.md");
+    const originalContent = await fs.readFile(samplePlanPath, "utf-8");
+    await fs.writeFile(testPlanPath, originalContent, "utf-8");
+
+    await syncPlanToCodeg({
+      dbPath: dbInstance.dbPath,
+      planPath: testPlanPath,
+      workspacePath: "/workspace/sample",
+      dryRun: false
+    });
+
+    await dbInstance.exec(`
+      UPDATE work_task SET status = 'running' WHERE title LIKE '%Setup core types%';
+    `);
+
+    const updatedContent = originalContent.replace(
+      "- [ ] **[IMPL] Setup core types and interfaces**",
+      "- [x] **[IMPL] Setup core types and interfaces**"
+    );
+    await fs.writeFile(testPlanPath, updatedContent, "utf-8");
+
+    const syncResult = await syncPlanToCodeg({
+      dbPath: dbInstance.dbPath,
+      planPath: testPlanPath,
+      workspacePath: "/workspace/sample",
+      dryRun: false
+    });
+
+    expect(syncResult.updated).toBe(1);
+    expect(syncResult.preserved).toBe(3);
+
+    const task = await dbInstance.query<{ status: string }>(
+      "SELECT status FROM work_task WHERE title LIKE '%Setup core types%';"
+    );
+    expect(task[0].status).toBe("done");
+  });
+
+  it("matches manual unkeyed task by title fallback and preserves status", async () => {
+    const client = new SqliteClient(dbInstance.dbPath);
+    const folder = await findOrCreateFolder(client, "/workspace/sample");
+    const folderId = folder.id;
+
+    await dbInstance.exec(`
+      INSERT INTO work_task (folder_id, title, config, status, source_kind, source_key, source_meta, created_at, updated_at)
+      VALUES (${folderId}, '[IMPL] Setup core types and interfaces', '{}', 'running', NULL, NULL, NULL, datetime('now'), datetime('now'));
+    `);
+
+    const planContent = await fs.readFile(samplePlanPath, "utf-8");
+    const plan = parseMarkdownPlan(planContent, samplePlanPath);
+    const diffs = await computePlanDiff(client, plan, folderId);
+
+    const matchedDiff = diffs.find((d) => d.task.title.includes("Setup core types"));
+    expect(matchedDiff).toBeDefined();
+    expect(matchedDiff?.action).toBe("preserve");
+    expect(matchedDiff?.currentStatus).toBe("running");
+    expect(matchedDiff?.targetStatus).toBe("running");
   });
 
   it("supports dryRun preview without touching database records (zero mutations on work_task and folder)", async () => {

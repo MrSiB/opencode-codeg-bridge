@@ -28,7 +28,11 @@ export const opencodeCodegBridgePlugin: Plugin = async (_input, _options): Promi
           dryRun: tool.schema
             .boolean()
             .optional()
-            .describe("If true, previews changes without modifying the database.")
+            .describe("If true, previews changes without modifying the database."),
+          force: tool.schema
+            .boolean()
+            .optional()
+            .describe("If true, forces overwrite/reset of task statuses from plan.")
         },
         execute: async (args, context) => {
           const env = await discoverEnvironment({
@@ -51,7 +55,8 @@ export const opencodeCodegBridgePlugin: Plugin = async (_input, _options): Promi
             dbPath: env.dbPath,
             planPath: env.planPath,
             workspacePath: env.workspacePath,
-            dryRun: args.dryRun
+            dryRun: args.dryRun,
+            force: args.force
           });
 
           return {
@@ -66,7 +71,8 @@ export const opencodeCodegBridgePlugin: Plugin = async (_input, _options): Promi
         args: {
           planPath: tool.schema.string().optional().describe("Optional path to plan."),
           dbPath: tool.schema.string().optional().describe("Optional path to codeg.db."),
-          workspacePath: tool.schema.string().optional().describe("Optional workspace path.")
+          workspacePath: tool.schema.string().optional().describe("Optional workspace path."),
+          force: tool.schema.boolean().optional().describe("If true, previews diff with forced overwrite.")
         },
         execute: async (args, context) => {
           const env = await discoverEnvironment({
@@ -89,7 +95,7 @@ export const opencodeCodegBridgePlugin: Plugin = async (_input, _options): Promi
           const planContent = await fs.readFile(env.planPath, "utf-8");
           const plan = parseMarkdownPlan(planContent, env.planPath);
           const folder = await findFolder(client, env.workspacePath);
-          const diffs = await computePlanDiff(client, plan, folder ? folder.id : null);
+          const diffs = await computePlanDiff(client, plan, folder ? folder.id : null, { force: args.force });
 
           return {
             title: `Codeg Plan Diff: ${plan.planTitle}`,
