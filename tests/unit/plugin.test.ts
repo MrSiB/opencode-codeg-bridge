@@ -66,4 +66,44 @@ describe("OpenCode Plugin Interface & Tool Registration", () => {
     expect(parsed.workspace).toBe("/workspace/plugin-test");
     expect(Array.isArray(parsed.tasks)).toBe(true);
   });
+
+  it("executes codeg_diff_plan and codeg_status_plan without mutating database", async () => {
+    const hooks = await opencodeCodegBridgePlugin({} as any, {} as any);
+    const diffTool = hooks.tool?.codeg_diff_plan;
+    const statusTool = hooks.tool?.codeg_status_plan;
+
+    const diffResult = await (diffTool as any).execute(
+      {
+        planPath: samplePlanPath,
+        dbPath: dbInstance.dbPath,
+        workspacePath: "/workspace/plugin-inspect-test"
+      },
+      {
+        directory: "/workspace/plugin-inspect-test"
+      }
+    );
+
+    const diffParsed = JSON.parse(diffResult.output);
+    expect(diffParsed.diffs).toHaveLength(4);
+    expect(diffParsed.diffs.every((d: any) => d.action === "create")).toBe(true);
+
+    const statusResult = await (statusTool as any).execute(
+      {
+        dbPath: dbInstance.dbPath,
+        workspacePath: "/workspace/plugin-inspect-test"
+      },
+      {
+        directory: "/workspace/plugin-inspect-test"
+      }
+    );
+
+    const statusParsed = JSON.parse(statusResult.output);
+    expect(statusParsed.folderId).toBeNull();
+    expect(statusParsed.tasks).toEqual([]);
+
+    const folderCount = await dbInstance.query<{ count: number }>(
+      "SELECT count(*) as count FROM folder;"
+    );
+    expect(folderCount[0].count).toBe(0);
+  });
 });

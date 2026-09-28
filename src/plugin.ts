@@ -1,7 +1,7 @@
 import type { Plugin, Hooks } from "@opencode-ai/plugin";
 import { tool } from "@opencode-ai/plugin";
 import { discoverEnvironment } from "./discovery.js";
-import { syncPlanToCodeg, computePlanDiff, findOrCreateFolder } from "./sync.js";
+import { syncPlanToCodeg, computePlanDiff, findFolder } from "./sync.js";
 import { parseMarkdownPlan } from "./parser.js";
 import { SqliteClient } from "./sqlite.js";
 import fs from "node:fs/promises";
@@ -88,8 +88,8 @@ export const opencodeCodegBridgePlugin: Plugin = async (_input, _options): Promi
           const client = new SqliteClient(env.dbPath);
           const planContent = await fs.readFile(env.planPath, "utf-8");
           const plan = parseMarkdownPlan(planContent, env.planPath);
-          const folderId = await findOrCreateFolder(client, env.workspacePath);
-          const diffs = await computePlanDiff(client, plan, folderId);
+          const folder = await findFolder(client, env.workspacePath);
+          const diffs = await computePlanDiff(client, plan, folder ? folder.id : null);
 
           return {
             title: `Codeg Plan Diff: ${plan.planTitle}`,
@@ -111,14 +111,16 @@ export const opencodeCodegBridgePlugin: Plugin = async (_input, _options): Promi
           });
 
           const client = new SqliteClient(env.dbPath);
-          const folderId = await findOrCreateFolder(client, env.workspacePath);
-          const tasks = await client.query<{ id: number; title: string; status: string }>(
-            `SELECT id, title, status FROM work_task WHERE folder_id = ${folderId} ORDER BY id ASC;`
-          );
+          const folder = await findFolder(client, env.workspacePath);
+          const tasks = folder
+            ? await client.query<{ id: number; title: string; status: string }>(
+                `SELECT id, title, status FROM work_task WHERE folder_id = ${folder.id} ORDER BY id ASC;`
+              )
+            : [];
 
           return {
             title: "Codeg Task Status",
-            output: JSON.stringify({ folderId, workspace: env.workspacePath, tasks }, null, 2)
+            output: JSON.stringify({ folderId: folder ? folder.id : null, workspace: env.workspacePath, tasks }, null, 2)
           };
         }
       })
