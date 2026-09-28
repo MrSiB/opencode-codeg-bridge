@@ -1,7 +1,7 @@
-import fs from "node:fs/promises";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { createDatabaseBackup, rotateDatabaseBackups } from "./backup.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -71,50 +71,13 @@ export class SqliteClient {
   }
 
   public async createBackup(): Promise<string> {
-    const now = new Date();
-    const timestamp = now.toISOString().replace(/[:.]/g, "-");
-    const backupPath = `${this.dbPath}.bak.${timestamp}`;
-
-    const args = [
-      "-bail",
-      "-cmd",
-      `.timeout ${this.busyTimeoutMs}`,
-      this.dbPath,
-      `.backup '${backupPath}'`
-    ];
-
-    await execFileAsync("sqlite3", args);
-    await this.rotateBackups();
-    return backupPath;
+    return createDatabaseBackup(this.dbPath, {
+      maxBackups: this.maxBackups,
+      busyTimeoutMs: this.busyTimeoutMs
+    });
   }
 
   public async rotateBackups(): Promise<void> {
-    const parentDir = path.dirname(this.dbPath);
-    const baseName = path.basename(this.dbPath);
-    const backupPrefix = `${baseName}.bak.`;
-
-    const entries = await fs.readdir(parentDir, { withFileTypes: true });
-    const backupFiles: { name: string; fullPath: string; mtime: number }[] = [];
-
-    for (const entry of entries) {
-      if (entry.isFile() && entry.name.startsWith(backupPrefix)) {
-        const fullPath = path.join(parentDir, entry.name);
-        const stat = await fs.stat(fullPath);
-        backupFiles.push({ name: entry.name, fullPath, mtime: stat.mtimeMs });
-      }
-    }
-
-    backupFiles.sort((a, b) => b.mtime - a.mtime);
-
-    if (backupFiles.length > this.maxBackups) {
-      const toDelete = backupFiles.slice(this.maxBackups);
-      for (const item of toDelete) {
-        try {
-          await fs.unlink(item.fullPath);
-        } catch {
-          // ignore unlink error
-        }
-      }
-    }
+    await rotateDatabaseBackups(this.dbPath, this.maxBackups);
   }
 }

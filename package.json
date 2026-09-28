@@ -20,6 +20,10 @@
     "./errors": {
       "types": "./dist/src/errors.d.ts",
       "import": "./dist/src/errors.js"
+    },
+    "./backup": {
+      "types": "./dist/src/backup.d.ts",
+      "import": "./dist/src/backup.js"
     }
   },
   "files": [
