@@ -205,7 +205,10 @@ export async function createTestDatabase(
   };
 
   const spawnRawClient = (clientOptions?: SqliteClientOptions): SqliteClient => {
-    return new SqliteClient(dbPath, clientOptions);
+    return new SqliteClient(dbPath, {
+      retry: false,
+      ...clientOptions
+    });
   };
 
   const cleanup = async (): Promise<void> => {
