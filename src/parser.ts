@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import path from "node:path";
-import type { ParsedPlan, PlanTask } from "./types.js";
+import type { ParsedPlan, PlanTask, TaskKind } from "./types.js";
 
 const HEADER_WAVE_REGEX = /^(#{1,3})\s+(?:Wave\s+(\d+|[A-Z0-9]+)[:\s-]*)?(.*)$/i;
 const TASK_CHECKBOX_REGEX = /^[-*]\s+\[([ xX])\]\s+(.*)$/;
@@ -81,11 +81,16 @@ export function parseMarkdownPlan(content: string, planPath: string): ParsedPlan
         }
       }
 
+      const kind: TaskKind = title.toUpperCase().includes("[IMPL]") ? "IMPL" : "PLAN";
+
       currentTask = {
+        id: String(taskIndex),
         title,
         description: initialDesc,
+        kind,
         status: isChecked ? "done" : "todo",
         wave: currentWave,
+        order: taskIndex,
         sourceKey: calculateSourceKey(planSlug, taskIndex, title)
       };
 
@@ -109,9 +114,12 @@ export function parseMarkdownPlan(content: string, planPath: string): ParsedPlan
   flushCurrentTask();
 
   return {
-    planPath,
-    planTitle,
+    slug: planSlug,
     planSlug,
+    title: planTitle,
+    planTitle,
+    path: planPath,
+    planPath,
     tasks
   };
 }

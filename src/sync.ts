@@ -4,7 +4,7 @@ import { parseMarkdownPlan } from "./parser.js";
 import type { ParsedPlan, PlanTask, SyncResult, TaskDiff } from "./types.js";
 import fs from "node:fs/promises";
 
-export interface SyncOptions {
+export interface PlanSyncOptions {
   dbPath: string;
   planPath: string;
   workspacePath: string;
@@ -117,7 +117,7 @@ export async function computePlanDiff(
   return diffs;
 }
 
-export async function syncPlanToCodeg(options: SyncOptions): Promise<SyncResult> {
+export async function syncPlanToCodeg(options: PlanSyncOptions): Promise<SyncResult> {
   const client = new SqliteClient(options.dbPath);
   const planContent = await fs.readFile(options.planPath, "utf-8");
   const plan = parseMarkdownPlan(planContent, options.planPath);
@@ -181,6 +181,7 @@ export async function syncPlanToCodeg(options: SyncOptions): Promise<SyncResult>
   }
 
   return {
+    success: true,
     planSlug: plan.planSlug,
     total: plan.tasks.length,
     created,
