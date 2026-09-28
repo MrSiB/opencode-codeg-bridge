@@ -6,3 +6,9 @@ export * from "./sqlite.js";
 export * from "./sync.js";
 export * from "./cli.js";
 export * from "./plugin.js";
+export {
+  retryAsync,
+  isSqliteBusyError,
+  calculateDelay,
+  type RetryOptions
+} from "./retry.js";
