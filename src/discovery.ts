@@ -3,6 +3,7 @@ import path from "node:path";
 import os from "node:os";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { PlanNotFoundError, DatabaseNotFoundError } from "./errors.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -73,7 +74,9 @@ export async function findCodegDatabase(
     if (await fileExists(resolved)) {
       return resolved;
     }
-    throw new Error(`Explicit Codeg database not found at: ${resolved}`);
+    throw new DatabaseNotFoundError(`Explicit Codeg database not found at: ${resolved}`, {
+      details: { dbPath: resolved }
+    });
   }
 
   if (process.env.CODEG_DB_PATH) {
@@ -96,7 +99,7 @@ export async function findCodegDatabase(
     }
   }
 
-  throw new Error(
+  throw new DatabaseNotFoundError(
     "Could not locate Codeg database (codeg.db). Specify path via --db or CODEG_DB_PATH."
   );
 }
@@ -111,7 +114,9 @@ export async function findPlanFile(
     if (await fileExists(resolved)) {
       return resolved;
     }
-    throw new Error(`Explicit plan file not found at: ${resolved}`);
+    throw new PlanNotFoundError(`Explicit plan file not found at: ${resolved}`, {
+      details: { planPath: resolved }
+    });
   }
 
   const baseDir = workspaceRoot || cwd;
