@@ -11,6 +11,8 @@ import {
 import { retryAsync, isSqliteBusyError } from "./retry.js";
 
 const execFileAsync = promisify(execFile);
+const inFlightBackups = new Set<string>();
+const dbBackupChains = new Map<string, Promise<unknown>>();
 
 export interface BackupOptions {
   maxBackups?: number;
@@ -164,12 +166,81 @@ export async function rotateDatabaseBackups(
  * @param options Backup options including maxBackups and busyTimeoutMs.
  * @returns Full path to the created backup snapshot.
  */
-export async function createDatabaseBackup(
-  dbPath: string,
+async function performDatabaseBackup(
+  resolvedDbPath: string,
   options?: BackupOptions
 ): Promise<string> {
   const maxBackups = options?.maxBackups ?? 5;
   const busyTimeoutMs = options?.busyTimeoutMs ?? 5000;
+
+  const timestamp = formatBackupTimestamp(new Date());
+  let backupPath = `${resolvedDbPath}.bak.${timestamp}`;
+  if (inFlightBackups.has(backupPath)) {
+    let counter = 1;
+    while (inFlightBackups.has(`${backupPath}-${counter}`)) {
+      counter++;
+    }
+    backupPath = `${backupPath}-${counter}`;
+  }
+  inFlightBackups.add(backupPath);
+
+  let currentBackupPath = backupPath;
+
+  try {
+    await fs.mkdir(path.dirname(backupPath), { recursive: true });
+
+    await retryAsync(
+      async () => {
+        const escapedBackupPath = currentBackupPath.replace(/'/g, "''");
+        const args = [
+          "-bail",
+          "-cmd",
+          `.timeout ${busyTimeoutMs}`,
+          resolvedDbPath,
+          `.backup '${escapedBackupPath}'`
+        ];
+
+        try {
+          await execFileAsync("sqlite3", args);
+        } catch (err: unknown) {
+          const errorObj = err as { code?: string; message?: string };
+          if (errorObj.code === "ENOENT") {
+            throw new SqliteCliNotFoundError();
+          }
+          if (isSqliteBusyError(err)) {
+            const retryTimestamp = formatBackupTimestamp(new Date());
+            const randomPart = Math.random().toString(36).slice(2, 6);
+            currentBackupPath = `${resolvedDbPath}.bak.${retryTimestamp}-${randomPart}`;
+            inFlightBackups.add(currentBackupPath);
+            throw err;
+          }
+          throw new SqliteExecutionError(
+            `Failed to create SQLite backup: ${errorObj.message || String(err)}`,
+            { details: { dbPath: resolvedDbPath, backupPath: currentBackupPath }, cause: err }
+          );
+        }
+      },
+      {
+        maxAttempts: 5,
+        minDelayMs: 50,
+        maxDelayMs: 500,
+        shouldRetry: isSqliteBusyError
+      }
+    );
+
+    await rotateDatabaseBackups(resolvedDbPath, maxBackups);
+
+    return currentBackupPath;
+  } finally {
+    inFlightBackups.delete(backupPath);
+    inFlightBackups.delete(currentBackupPath);
+  }
+}
+
+export async function createDatabaseBackup(
+  dbPath: string,
+  options?: BackupOptions
+): Promise<string> {
   const resolvedDbPath = path.resolve(dbPath);
 
   try {
@@ -194,48 +265,20 @@ export async function createDatabaseBackup(
     throw err;
   }
 
-  const timestamp = formatBackupTimestamp(new Date());
-  const backupPath = `${resolvedDbPath}.bak.${timestamp}`;
+  const previous = dbBackupChains.get(resolvedDbPath) || Promise.resolve();
+  let release: () => void;
+  const current = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  dbBackupChains.set(resolvedDbPath, current);
 
-  // Ensure destination directory exists
-  await fs.mkdir(path.dirname(backupPath), { recursive: true });
-
-  const escapedBackupPath = backupPath.replace(/'/g, "''");
-  const args = [
-    "-bail",
-    "-cmd",
-    `.timeout ${busyTimeoutMs}`,
-    resolvedDbPath,
-    `.backup '${escapedBackupPath}'`
-  ];
-
-  await retryAsync(
-    async () => {
-      try {
-        await execFileAsync("sqlite3", args);
-      } catch (err: unknown) {
-        const errorObj = err as { code?: string; message?: string };
-        if (errorObj.code === "ENOENT") {
-          throw new SqliteCliNotFoundError();
-        }
-        if (isSqliteBusyError(err)) {
-          throw err;
-        }
-        throw new SqliteExecutionError(
-          `Failed to create SQLite backup: ${errorObj.message || String(err)}`,
-          { details: { dbPath: resolvedDbPath, backupPath }, cause: err }
-        );
-      }
-    },
-    {
-      maxAttempts: 5,
-      minDelayMs: 50,
-      maxDelayMs: 500,
-      shouldRetry: isSqliteBusyError
+  await previous.catch(() => {});
+  try {
+    return await performDatabaseBackup(resolvedDbPath, options);
+  } finally {
+    release!();
+    if (dbBackupChains.get(resolvedDbPath) === current) {
+      dbBackupChains.delete(resolvedDbPath);
     }
-  );
-
-  await rotateDatabaseBackups(resolvedDbPath, maxBackups);
-
-  return backupPath;
+  }
 }
