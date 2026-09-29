@@ -9,3 +9,4 @@ export type * from "./sync.js";
 export type * from "./cli.js";
 export type * from "./plugin.js";
 export type { RetryOptions } from "./retry.js";
+export * from "./tracker-db.js";

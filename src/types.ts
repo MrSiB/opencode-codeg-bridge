@@ -227,15 +227,15 @@ export interface ConversationRecord {
 
 export interface CreateChildConversationParams {
   folderId: number;
-  title: string;
+  title?: string | null;
   agentType: string;
   status?: string;
-  model?: string;
-  parentId: number;
+  model?: string | null;
+  parentId?: number | null;
   parentToolUseId: string;
   delegationCallId: string;
-  kind?: "delegate" | "regular";
-  originCwd?: string;
+  kind?: "delegate" | "regular" | string;
+  originCwd?: string | null;
 }
 
 export interface ActiveDelegation {

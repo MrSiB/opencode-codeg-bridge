@@ -74,3 +74,33 @@ CREATE TABLE IF NOT EXISTS work_task_event (
 );
 
 CREATE INDEX IF NOT EXISTS idx_work_task_event_task_created ON work_task_event (task_id, created_at);
+
+CREATE TABLE IF NOT EXISTS conversation (
+  id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+  folder_id INTEGER NOT NULL,
+  title VARCHAR NULL,
+  agent_type VARCHAR NOT NULL,
+  status VARCHAR NOT NULL DEFAULT 'in_progress',
+  model VARCHAR NULL,
+  git_branch VARCHAR NULL,
+  external_id VARCHAR NULL,
+  parent_id INTEGER NULL,
+  message_count INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  deleted_at TEXT NULL,
+  parent_tool_use_id TEXT NULL,
+  delegation_call_id TEXT NULL,
+  title_locked BOOLEAN NOT NULL DEFAULT 0,
+  pinned_at TEXT NULL,
+  kind TEXT NOT NULL DEFAULT 'regular',
+  origin_cwd TEXT NULL,
+  FOREIGN KEY (folder_id) REFERENCES folder (id) ON DELETE CASCADE ON UPDATE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_conversation_folder_id ON conversation (folder_id);
+CREATE INDEX IF NOT EXISTS idx_conversation_deleted_created ON conversation (deleted_at, created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_conversation_external_agent ON conversation (external_id, agent_type);
+CREATE INDEX IF NOT EXISTS idx_conversation_parent_tool_use_id ON conversation (parent_tool_use_id);
+CREATE INDEX IF NOT EXISTS idx_conversation_delegation_call_id ON conversation (delegation_call_id);
+CREATE INDEX IF NOT EXISTS idx_conversation_parent_id ON conversation (parent_id);
