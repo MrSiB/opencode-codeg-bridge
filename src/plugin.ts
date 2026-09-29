@@ -5,6 +5,7 @@ import { syncPlanToCodeg, computePlanDiff, findFolder } from "./sync.js";
 import { parseMarkdownPlan } from "./parser.js";
 import { SqliteClient } from "./sqlite.js";
 import { BridgeError, PlanNotFoundError } from "./errors.js";
+import { SubagentTracker } from "./tracker.js";
 import fs from "node:fs/promises";
 
 export interface PluginCommandDefinition {
@@ -56,6 +57,35 @@ export function formatErrorOutput(title: string, err: unknown): { title: string;
 }
 
 export const opencodeCodegBridgePlugin: Plugin = async (_input, _options): Promise<Hooks> => {
+  let trackerPromise: Promise<SubagentTracker | null> | null = null;
+
+  const getTracker = (): Promise<SubagentTracker | null> => {
+    if (!trackerPromise) {
+      trackerPromise = (async () => {
+        try {
+          const env = await discoverEnvironment({
+            explicitWorkspace: _input?.worktree || _input?.directory
+          });
+          const client = new SqliteClient(env.dbPath);
+          return new SubagentTracker(client);
+        } catch {
+          return null;
+        }
+      })();
+    }
+    return trackerPromise;
+  };
+
+  (async () => {
+    try {
+      const tracker = await getTracker();
+      if (tracker) {
+        await tracker.reconcileStaleSubagents();
+      }
+    } catch {
+    }
+  })();
+
   const commandDefinition: PluginCommandDefinition = {
     description: "Synchronize current OmO plan to Codeg task orchestration database",
     template:
@@ -75,7 +105,51 @@ export const opencodeCodegBridgePlugin: Plugin = async (_input, _options): Promi
     },
     "command.execute.before": async (input, _output) => {
       if (input.command === "codeg-sync" || input.command === "/codeg-sync") {
-        // Slash command hook handler
+      }
+    },
+    "tool.execute.before": async (input, output) => {
+      try {
+        if (input.tool === "task" || input.tool === "delegate_to_agent") {
+          const tracker = await getTracker();
+          if (tracker) {
+            await tracker.handleToolBefore({
+              tool: input.tool,
+              sessionID: input.sessionID,
+              callID: input.callID,
+              args: output.args
+            });
+          }
+        }
+      } catch {
+      }
+    },
+    "tool.execute.after": async (input, output) => {
+      try {
+        if (input.tool === "task" || input.tool === "delegate_to_agent") {
+          const tracker = await getTracker();
+          if (tracker) {
+            await tracker.handleToolAfter({
+              tool: input.tool,
+              sessionID: input.sessionID,
+              callID: input.callID,
+              args: input.args,
+              output: output.output,
+              metadata: output.metadata
+            });
+          }
+        }
+      } catch {
+      }
+    },
+    event: async (input) => {
+      try {
+        if (input?.event?.type === "session.created") {
+          const tracker = await getTracker();
+          if (tracker && (input.event as any).properties?.info) {
+            await tracker.handleSessionCreated((input.event as any).properties.info);
+          }
+        }
+      } catch {
       }
     },
     tool: {

@@ -4,7 +4,8 @@ import {
   findConversationByExternalId,
   createChildConversation,
   updateConversationExternalId,
-  updateConversationStatus
+  updateConversationStatus,
+  reconcileStaleSubagents
 } from "./tracker-db.js";
 import type { ActiveDelegation } from "./types.js";
 
@@ -191,6 +192,19 @@ export class SubagentTracker {
           err instanceof Error ? err.message : String(err)
         }`
       );
+    }
+  }
+
+  public async reconcileStaleSubagents(olderThanMinutes?: number): Promise<number> {
+    try {
+      return await reconcileStaleSubagents(this.client, olderThanMinutes);
+    } catch (err) {
+      this.logger?.error?.(
+        `[SubagentTracker] Error in reconcileStaleSubagents: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      );
+      return 0;
     }
   }
 }
