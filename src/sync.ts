@@ -317,10 +317,17 @@ export async function syncPlanToCodeg(options: PlanSyncOptions): Promise<SyncRes
     }
   }
 
+  const maxOrderRows = await client.query<{ max_order: number | null }>(
+    `SELECT COALESCE(MAX(sort_order), 0) AS max_order FROM work_task WHERE folder_id = ${folderId};`
+  );
+  let currentMaxSortOrder = Number(maxOrderRows[0]?.max_order ?? 0);
+
   const sqlCommands: string[] = [];
 
   for (const diff of diffs) {
     if (diff.action === "create") {
+      currentMaxSortOrder++;
+      const taskSortOrder = currentMaxSortOrder;
       const task = diff.task;
       const config = JSON.stringify({
         prompt: task.description || task.title,
@@ -332,8 +339,8 @@ export async function syncPlanToCodeg(options: PlanSyncOptions): Promise<SyncRes
       });
 
       sqlCommands.push(`
-INSERT INTO work_task (folder_id, title, config, status, source_kind, source_key, source_meta, created_at, updated_at)
-SELECT ${folderId}, '${escapeSql(task.title)}', '${escapeSql(config)}', '${diff.targetStatus}', 'omo_plan', '${escapeSql(task.sourceKey)}', '${escapeSql(meta)}', datetime('now'), datetime('now')
+INSERT INTO work_task (folder_id, title, config, status, source_kind, source_key, source_meta, sort_order, created_at, updated_at)
+SELECT ${folderId}, '${escapeSql(task.title)}', '${escapeSql(config)}', '${diff.targetStatus}', 'omo_plan', '${escapeSql(task.sourceKey)}', '${escapeSql(meta)}', ${taskSortOrder}, datetime('now'), datetime('now')
 WHERE NOT EXISTS (
 SELECT 1 FROM work_task WHERE folder_id = ${folderId} AND source_key = '${escapeSql(task.sourceKey)}'
 );

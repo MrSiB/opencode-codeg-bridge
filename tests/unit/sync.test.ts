@@ -641,6 +641,87 @@ describe("syncPlanToCodeg Input Validation", () => {
       })
     ).rejects.toThrowError(BridgeError);
   });
+
+  it("assigns monotonically increasing sort_order based on existing max(sort_order)", async () => {
+    const emptyWorkspace = "/workspace/empty-db-sort-order";
+    const planPath1 = path.join(dbInstance.tempDir, "plan-empty-db.md");
+    await fs.writeFile(
+      planPath1,
+      [
+        "# FIFO Empty DB Test Plan",
+        "",
+        "## Wave 1",
+        "- [ ] **[IMPL-01/03] Task One**",
+        "- [ ] **[IMPL-02/03] Task Two**",
+        "- [ ] **[IMPL-03/03] Task Three**"
+      ].join("\n"),
+      "utf-8"
+    );
+
+    const result1 = await syncPlanToCodeg({
+      dbPath: dbInstance.dbPath,
+      planPath: planPath1,
+      workspacePath: emptyWorkspace,
+      dryRun: false
+    });
+
+    expect(result1.success).toBe(true);
+    expect(result1.created).toBe(3);
+
+    const folder1 = await findFolder(new SqliteClient(dbInstance.dbPath), emptyWorkspace);
+    expect(folder1).not.toBeNull();
+
+    const tasks1 = await dbInstance.query<{ title: string; sort_order: number }>(
+      `SELECT title, sort_order FROM work_task WHERE folder_id = ${folder1!.id} ORDER BY id ASC;`
+    );
+
+    expect(tasks1).toHaveLength(3);
+    expect(tasks1[0].sort_order).toBe(1);
+    expect(tasks1[1].sort_order).toBe(2);
+    expect(tasks1[2].sort_order).toBe(3);
+
+    const existingWorkspace = "/workspace/existing-max-sort-order";
+    const client = new SqliteClient(dbInstance.dbPath);
+    const folder2 = await findOrCreateFolder(client, existingWorkspace);
+
+    await dbInstance.exec(`
+      INSERT INTO work_task (folder_id, title, config, status, sort_order, created_at, updated_at)
+      VALUES (${folder2.id}, 'Pre-existing Task', '{}', 'todo', 10, datetime('now'), datetime('now'));
+    `);
+
+    const planPath2 = path.join(dbInstance.tempDir, "plan-existing-max.md");
+    await fs.writeFile(
+      planPath2,
+      [
+        "# FIFO Existing Max Test Plan",
+        "",
+        "## Wave 1",
+        "- [ ] **[IMPL-01/03] Alpha Feature**",
+        "- [ ] **[IMPL-02/03] Beta Feature**",
+        "- [ ] **[IMPL-03/03] Gamma Feature**"
+      ].join("\n"),
+      "utf-8"
+    );
+
+    const result2 = await syncPlanToCodeg({
+      dbPath: dbInstance.dbPath,
+      planPath: planPath2,
+      workspacePath: existingWorkspace,
+      dryRun: false
+    });
+
+    expect(result2.success).toBe(true);
+    expect(result2.created).toBe(3);
+
+    const tasks2 = await dbInstance.query<{ title: string; sort_order: number }>(
+      `SELECT title, sort_order FROM work_task WHERE folder_id = ${folder2.id} AND title != 'Pre-existing Task' ORDER BY id ASC;`
+    );
+
+    expect(tasks2).toHaveLength(3);
+    expect(tasks2[0].sort_order).toBe(11);
+    expect(tasks2[1].sort_order).toBe(12);
+    expect(tasks2[2].sort_order).toBe(13);
+  });
 });
 
 describe("Non-mutating Folder Discovery & Atomic Upsert", () => {
