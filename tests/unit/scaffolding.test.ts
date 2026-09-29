@@ -2,7 +2,8 @@ import { describe, it, expect } from "vitest";
 import { readFileSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { opencodeCodegBridgePlugin, runCli } from "../../src/index.js";
+import { opencodeCodegBridgePlugin } from "../../src/index.js";
+import { runCli } from "../../src/cli.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkgRoot = resolve(__dirname, "../..");
@@ -81,7 +82,7 @@ describe("Package Scaffolding Verification", () => {
     expect(tsconfigBuild.exclude).toContain("tests/**/*");
   });
 
-  it("verifies src/index.ts exports opencodeCodegBridgePlugin and runCli", () => {
+  it("verifies src/index.ts exports opencodeCodegBridgePlugin and src/cli.ts exports runCli", () => {
     expect(typeof opencodeCodegBridgePlugin).toBe("function");
     expect(typeof runCli).toBe("function");
   });

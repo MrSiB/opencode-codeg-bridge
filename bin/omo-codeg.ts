@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { runCli } from "../src/index.js";
+import { runCli } from "../src/cli.js";
 
 runCli().catch((err: unknown) => {
   if (process.argv.includes("--json")) {

@@ -24,6 +24,26 @@
     "./backup": {
       "types": "./dist/src/backup.d.ts",
       "import": "./dist/src/backup.js"
+    },
+    "./sync": {
+      "types": "./dist/src/sync.d.ts",
+      "import": "./dist/src/sync.js"
+    },
+    "./sqlite": {
+      "types": "./dist/src/sqlite.d.ts",
+      "import": "./dist/src/sqlite.js"
+    },
+    "./cli": {
+      "types": "./dist/src/cli.d.ts",
+      "import": "./dist/src/cli.js"
+    },
+    "./parser": {
+      "types": "./dist/src/parser.d.ts",
+      "import": "./dist/src/parser.js"
+    },
+    "./discovery": {
+      "types": "./dist/src/discovery.d.ts",
+      "import": "./dist/src/discovery.js"
     }
   },
   "files": [
