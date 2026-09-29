@@ -248,4 +248,10 @@ export interface ActiveDelegation {
   startedAt: number;
 }
 
+export interface SubagentTrackerOptions {
+  timeoutMs?: number;
+  maxAgeMs?: number;
+  pruneIntervalMs?: number;
+}
+
 

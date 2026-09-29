@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import opencodeCodegBridgePluginDefault, {
   opencodeCodegBridgePlugin as pluginFromIndex
 } from "../../src/index.js";
@@ -169,6 +169,59 @@ describe("OpenCode Plugin Interface & Tool Registration", () => {
         "SELECT count(*) as count FROM folder;"
       );
       expect(folderCount[0].count).toBe(0);
+    });
+
+    it("registers tracker hooks and delegates tool lifecycle safely", async () => {
+      const mockTracker: any = {
+        handleToolBefore: vi.fn(),
+        handleToolAfter: vi.fn(),
+        handleSessionCreated: vi.fn(),
+        dispose: vi.fn()
+      };
+
+      const hooks = await opencodeCodegBridgePlugin({} as any, { tracker: mockTracker } as any);
+      expect(hooks["tool.execute.before"]).toBeDefined();
+      expect(hooks["tool.execute.after"]).toBeDefined();
+      expect(hooks.event).toBeDefined();
+      expect(hooks.dispose).toBeDefined();
+
+      await hooks["tool.execute.before"]!(
+        { tool: "task", sessionID: "s1", callID: "c1" },
+        { args: { description: "test" } }
+      );
+      expect(mockTracker.handleToolBefore).toHaveBeenCalledWith({
+        tool: "task",
+        sessionID: "s1",
+        callID: "c1",
+        args: { description: "test" }
+      });
+
+      await hooks.event!({
+        event: {
+          type: "session.created",
+          properties: { info: { id: "s2", parentID: "s1" } }
+        } as any
+      });
+      expect(mockTracker.handleSessionCreated).toHaveBeenCalledWith({
+        id: "s2",
+        parentID: "s1"
+      });
+
+      await hooks["tool.execute.after"]!(
+        { tool: "task", sessionID: "s1", callID: "c1", args: {} },
+        { title: "test", output: "ok", metadata: {} }
+      );
+      expect(mockTracker.handleToolAfter).toHaveBeenCalledWith({
+        tool: "task",
+        sessionID: "s1",
+        callID: "c1",
+        args: {},
+        output: "ok",
+        metadata: {}
+      });
+
+      await hooks.dispose!();
+      expect(mockTracker.dispose).toHaveBeenCalled();
     });
   });
 

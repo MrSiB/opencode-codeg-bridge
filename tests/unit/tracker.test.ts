@@ -246,4 +246,56 @@ describe("SubagentTracker unit tests", () => {
 
     expect(tracker.activeDelegations.size).toBe(0);
   });
+
+  it("supports SubagentTrackerOptions, pruneAbandoned and dispose", async () => {
+    const client = testDb.spawnRawClient();
+    const tracker = new SubagentTracker(client, undefined, {
+      timeoutMs: 100,
+      maxAgeMs: 50,
+      pruneIntervalMs: 1000
+    });
+
+    tracker.activeDelegations.set("old_call", {
+      callId: "old_call",
+      parentSessionId: "ses_parent_123",
+      recordIdPromise: Promise.resolve(null),
+      startedAt: Date.now() - 100
+    });
+    tracker.activeDelegations.set("fresh_call", {
+      callId: "fresh_call",
+      parentSessionId: "ses_parent_123",
+      recordIdPromise: Promise.resolve(null),
+      startedAt: Date.now()
+    });
+
+    const pruned = tracker.pruneAbandoned();
+    expect(pruned).toBe(1);
+    expect(tracker.activeDelegations.has("old_call")).toBe(false);
+    expect(tracker.activeDelegations.has("fresh_call")).toBe(true);
+
+    tracker.dispose();
+  });
+
+  it("handles timeout in background creation safely resolving recordId to null", async () => {
+    const slowClient = {
+      query: () => new Promise<never>(() => {})
+    } as any;
+    const tracker = new SubagentTracker(slowClient, undefined, {
+      timeoutMs: 50
+    });
+
+    await tracker.handleToolBefore({
+      tool: "task",
+      sessionID: "ses_parent_123",
+      callID: "call_timeout",
+      args: { description: "Timeout test" }
+    });
+
+    const delegation = tracker.activeDelegations.get("call_timeout");
+    expect(delegation).toBeDefined();
+
+    const recordId = await delegation!.recordIdPromise;
+    expect(recordId).toBeNull();
+    tracker.dispose();
+  });
 });

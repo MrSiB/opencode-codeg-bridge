@@ -63,11 +63,19 @@ export const opencodeCodegBridgePlugin: Plugin = async (_input, _options): Promi
     if (!trackerPromise) {
       trackerPromise = (async () => {
         try {
+          if ((_options as any)?.tracker) {
+            return (_options as any).tracker as SubagentTracker;
+          }
+          const explicitDb = typeof (_options as any)?.dbPath === "string" ? (_options as any).dbPath : undefined;
           const env = await discoverEnvironment({
+            explicitDbPath: explicitDb,
             explicitWorkspace: _input?.worktree || _input?.directory
           });
-          const client = new SqliteClient(env.dbPath);
-          return new SubagentTracker(client);
+          if (env.dbPath) {
+            const client = new SqliteClient(env.dbPath);
+            return new SubagentTracker(client);
+          }
+          return null;
         } catch {
           return null;
         }
@@ -82,8 +90,7 @@ export const opencodeCodegBridgePlugin: Plugin = async (_input, _options): Promi
       if (tracker) {
         await tracker.reconcileStaleSubagents();
       }
-    } catch {
-    }
+    } catch {}
   })();
 
   const commandDefinition: PluginCommandDefinition = {
@@ -93,19 +100,21 @@ export const opencodeCodegBridgePlugin: Plugin = async (_input, _options): Promi
   };
 
   const hooks: BridgePluginHooks = {
-    config: async (cfg: Config) => {
-      if (!cfg.command) {
-        cfg.command = {};
-      }
-      cfg.command["codeg-sync"] = commandDefinition;
+    dispose: async () => {
+      try {
+        const tracker = await getTracker();
+        tracker?.dispose();
+      } catch {}
     },
-    command: {
-      "codeg-sync": commandDefinition,
-      "/codeg-sync": commandDefinition
-    },
-    "command.execute.before": async (input, _output) => {
-      if (input.command === "codeg-sync" || input.command === "/codeg-sync") {
-      }
+    event: async (input: { event: any }) => {
+      try {
+        if (input?.event?.type === "session.created") {
+          const tracker = await getTracker();
+          if (tracker && (input.event as any).properties?.info) {
+            await tracker.handleSessionCreated((input.event as any).properties.info);
+          }
+        }
+      } catch {}
     },
     "tool.execute.before": async (input, output) => {
       try {
@@ -120,8 +129,7 @@ export const opencodeCodegBridgePlugin: Plugin = async (_input, _options): Promi
             });
           }
         }
-      } catch {
-      }
+      } catch {}
     },
     "tool.execute.after": async (input, output) => {
       try {
@@ -138,18 +146,21 @@ export const opencodeCodegBridgePlugin: Plugin = async (_input, _options): Promi
             });
           }
         }
-      } catch {
-      }
+      } catch {}
     },
-    event: async (input) => {
-      try {
-        if (input?.event?.type === "session.created") {
-          const tracker = await getTracker();
-          if (tracker && (input.event as any).properties?.info) {
-            await tracker.handleSessionCreated((input.event as any).properties.info);
-          }
-        }
-      } catch {
+    config: async (cfg: Config) => {
+      if (!cfg.command) {
+        cfg.command = {};
+      }
+      cfg.command["codeg-sync"] = commandDefinition;
+    },
+    command: {
+      "codeg-sync": commandDefinition,
+      "/codeg-sync": commandDefinition
+    },
+    "command.execute.before": async (input, _output) => {
+      if (input.command === "codeg-sync" || input.command === "/codeg-sync") {
+        // Slash command hook handler
       }
     },
     tool: {
