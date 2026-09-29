@@ -62,3 +62,15 @@ CREATE TABLE IF NOT EXISTS work_task (
 CREATE INDEX IF NOT EXISTS idx_work_task_folder ON work_task (folder_id);
 CREATE INDEX IF NOT EXISTS idx_work_task_status ON work_task (status);
 CREATE INDEX IF NOT EXISTS idx_work_task_source_key ON work_task (source_key);
+
+CREATE TABLE IF NOT EXISTS work_task_event (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id INTEGER NOT NULL,
+  kind VARCHAR NOT NULL,
+  actor VARCHAR NOT NULL,
+  payload TEXT NULL,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (task_id) REFERENCES work_task (id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_work_task_event_task_created ON work_task_event (task_id, created_at);
