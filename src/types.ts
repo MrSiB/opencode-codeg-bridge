@@ -203,3 +203,49 @@ export interface CliStatusOutput {
     sourceKey?: string | null;
   }>;
 }
+
+export type SubagentStatus = "in_progress" | "completed" | "failed";
+
+export interface ConversationRecord {
+  id: number;
+  folder_id: number;
+  title: string | null;
+  agent_type: string;
+  status: string;
+  model: string | null;
+  git_branch: string | null;
+  external_id: string | null;
+  parent_id: number | null;
+  message_count: number;
+  created_at: string;
+  updated_at: string;
+  parent_tool_use_id: string | null;
+  delegation_call_id: string | null;
+  kind: string;
+  origin_cwd: string | null;
+}
+
+export interface CreateChildConversationParams {
+  folderId: number;
+  title: string;
+  agentType: string;
+  status?: string;
+  model?: string;
+  parentId: number;
+  parentToolUseId: string;
+  delegationCallId: string;
+  kind?: "delegate" | "regular";
+  originCwd?: string;
+}
+
+export interface ActiveDelegation {
+  callId: string;
+  parentSessionId: string;
+  parentConversationId?: number;
+  folderId?: number;
+  recordIdPromise: Promise<number | null>;
+  childSessionId?: string;
+  startedAt: number;
+}
+
+
